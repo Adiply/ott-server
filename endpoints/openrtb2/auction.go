@@ -14,7 +14,8 @@ import (
 
 	"github.com/buger/jsonparser"
 	jsonpatch "github.com/evanphx/json-patch"
-	"github.com/Adiply/ott-log"
+	"github.com/golang/glog"
+	"github.com/Adiply/ottlog"
 	"github.com/julienschmidt/httprouter"
 	"github.com/mssola/user_agent"
 	"github.com/mxmCherry/openrtb"
@@ -153,7 +154,7 @@ func (deps *endpointDeps) Auction(w http.ResponseWriter, r *http.Request, _ http
 		return
 	} else {
 		responseJson, _ := json.Marshal(response)
-		glog.Analytics(string(responseJson))
+		ottlog.Analytics(string(responseJson))
 	}
 
 	// Fixes #231
