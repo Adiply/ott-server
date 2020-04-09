@@ -14,7 +14,7 @@ import (
 
 	"github.com/buger/jsonparser"
 	jsonpatch "github.com/evanphx/json-patch"
-	"github.com/golang/glog"
+	"github.com/Adiply/ott-log"
 	"github.com/julienschmidt/httprouter"
 	"github.com/mssola/user_agent"
 	"github.com/mxmCherry/openrtb"
@@ -151,6 +151,9 @@ func (deps *endpointDeps) Auction(w http.ResponseWriter, r *http.Request, _ http
 		ao.Status = http.StatusInternalServerError
 		ao.Errors = append(ao.Errors, err)
 		return
+	} else {
+		responseJson, _ := json.Marshal(response)
+		glog.Analytics(string(responseJson))
 	}
 
 	// Fixes #231
