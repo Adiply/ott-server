@@ -75,6 +75,9 @@ type Configuration struct {
 
 const MIN_COOKIE_SIZE_BYTES = 500
 
+// Logstash configuration
+const LOGSTASH_DIR_PATH = "/var/log/prebid/"
+
 type HTTPClient struct {
 	MaxConnsPerHost     int `mapstructure:"max_connections_per_host"`
 	MaxIdleConns        int `mapstructure:"max_idle_connections"`

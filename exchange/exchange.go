@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -150,6 +151,29 @@ func (e *exchange) HoldAuction(ctx context.Context, bidRequest *openrtb.BidReque
 
 	adapterBids, adapterExtra, anyBidsReturned := e.getAllBids(auctionCtx, cleanRequests, aliases, bidAdjustmentFactors, blabels, conversions)
 
+	//spew.Dump(adapterBids)
+	//for i, s := range adapterBids {
+	//	spew.Dump(s)
+	//
+	//	for k, bid := range s.bids {
+	//		glog.Info(k)
+	//
+	//		v := reflect.ValueOf(bid)
+	//		values := make([]interface{}, v.NumField())
+	//
+	//		for i := 0; i < v.NumField(); i++ {
+	//			values[i] = v.Field(i).Interface()
+	//		}
+	//		glog.Info(values)
+	//
+	//		glog.Infoln(bid.bidType)
+	//		glog.Infoln(bid.bidTargets)
+	//		glog.Infoln(bid.dealPriority)
+	//		glog.Infoln(bid.bidVideo.Duration)
+	//		glog.Infoln(bid.bidVideo.PrimaryCategory)
+	//	}
+	//}
+
 	var auc *auction = nil
 	var bidResponseExt *openrtb_ext.ExtBidResponse = nil
 	if anyBidsReturned {
@@ -201,6 +225,37 @@ func (e *exchange) HoldAuction(ctx context.Context, bidRequest *openrtb.BidReque
 			}
 		}
 
+		aucMap := map[string]interface{}{}
+
+		for _, bidMap := range auc.winningBidsByBidder {
+			for bidder, ortbBid := range bidMap {
+				bidMap := map[string]interface{}{}
+				bidMap["bid"] = ortbBid.bid
+				bidMap["bid_type"] = ortbBid.bidType
+				bidMap["bid_targets"] = ortbBid.bidTargets
+				bidMap["bid_video"] = ortbBid.bidVideo
+				bidMap["deal_priority"] = ortbBid.dealPriority
+
+				aucMap[bidder.String()] = bidMap
+			}
+		}
+
+		logstash, err := os.OpenFile(config.LOGSTASH_DIR_PATH + "auction.log", os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+		if err == nil {
+			defer logstash.Close()
+			defer glog.Flush()
+
+			glog.SetLogstashWriter(logstash)
+			aucJson, err := json.Marshal(aucMap)
+
+			if err == nil {
+				glog.Infoln(string(aucJson))
+			} else {
+				glog.Error("Error: ", err.Error())
+			}
+		} else {
+			glog.Error("unable to create auction.log:" + err.Error())
+		}
 	}
 
 	// Build the response

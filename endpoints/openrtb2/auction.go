@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	ottlog "github.com/Adiply/ott-log"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -170,9 +169,6 @@ func (deps *endpointDeps) Auction(w http.ResponseWriter, r *http.Request, _ http
 		ao.Status = http.StatusInternalServerError
 		ao.Errors = append(ao.Errors, err)
 		return
-	} else {
-		responseJson, _ := json.Marshal(response)
-		glog.Info(string(responseJson))
 	}
 
 	// Fixes #231
