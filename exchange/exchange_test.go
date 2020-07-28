@@ -16,19 +16,18 @@ import (
 	"time"
 
 	"github.com/prebid/prebid-server/adapters"
-	"github.com/prebid/prebid-server/currencies"
-	"github.com/prebid/prebid-server/prebid_cache_client"
-	"github.com/prebid/prebid-server/stored_requests"
-	"github.com/prebid/prebid-server/stored_requests/backends/file_fetcher"
-
-	"github.com/buger/jsonparser"
-	"github.com/mxmCherry/openrtb"
 	"github.com/prebid/prebid-server/config"
+	"github.com/prebid/prebid-server/currencies"
 	"github.com/prebid/prebid-server/gdpr"
 	"github.com/prebid/prebid-server/openrtb_ext"
 	"github.com/prebid/prebid-server/pbsmetrics"
 	metricsConf "github.com/prebid/prebid-server/pbsmetrics/config"
 	pbc "github.com/prebid/prebid-server/prebid_cache_client"
+	"github.com/prebid/prebid-server/stored_requests"
+	"github.com/prebid/prebid-server/stored_requests/backends/file_fetcher"
+
+	"github.com/buger/jsonparser"
+	"github.com/mxmCherry/openrtb"
 	"github.com/rcrowley/go-metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/yudai/gojsondiff"
@@ -483,6 +482,11 @@ func TestRaceIntegration(t *testing.T) {
 		Endpoint:   server.URL,
 		PlatformID: "abc",
 	}
+	cfg.Adapters[strings.ToLower(string(openrtb_ext.BidderBeachfront))] = config.Adapter{
+		Endpoint:         server.URL,
+		ExtraAdapterInfo: "{\"video_endpoint\":\"" + server.URL + "\"}",
+	}
+
 	categoriesFetcher, error := newCategoryFetcher("./test/category-mapping")
 	if error != nil {
 		t.Errorf("Failed to create a category Fetcher: %v", error)
@@ -577,7 +581,15 @@ func TestPanicRecovery(t *testing.T) {
 	panicker := func(aName openrtb_ext.BidderName, coreBidder openrtb_ext.BidderName, request *openrtb.BidRequest, bidlabels *pbsmetrics.AdapterLabels, conversions currencies.Conversions) {
 		panic("panic!")
 	}
-	recovered := e.recoverSafely(panicker, chBids)
+	cleanReqs := map[openrtb_ext.BidderName]*openrtb.BidRequest{
+		"bidder1": {
+			ID: "b-1",
+		},
+		"bidder2": {
+			ID: "b-2",
+		},
+	}
+	recovered := e.recoverSafely(cleanReqs, panicker, chBids)
 	apnLabels := pbsmetrics.AdapterLabels{
 		Source:      pbsmetrics.DemandWeb,
 		RType:       pbsmetrics.ReqTypeORTB2Web,
@@ -726,7 +738,17 @@ func runSpec(t *testing.T, filename string, spec *exchangeSpec) {
 	if len(errs) != 0 {
 		t.Fatalf("%s: Failed to parse aliases", filename)
 	}
-	ex := newExchangeForTests(t, filename, spec.OutgoingRequests, aliases, spec.EnforceCCPA)
+
+	privacyConfig := config.Privacy{
+		CCPA: config.CCPA{
+			Enforce: spec.EnforceCCPA,
+		},
+		LMT: config.LMT{
+			Enforce: spec.EnforceLMT,
+		},
+	}
+
+	ex := newExchangeForTests(t, filename, spec.OutgoingRequests, aliases, privacyConfig)
 	biddersInAuction := findBiddersInAuction(t, filename, &spec.IncomingRequest.OrtbRequest)
 	categoriesFetcher, error := newCategoryFetcher("./test/category-mapping")
 	if error != nil {
@@ -735,6 +757,7 @@ func runSpec(t *testing.T, filename string, spec *exchangeSpec) {
 	debugLog := &DebugLog{}
 	if spec.DebugLog != nil {
 		*debugLog = *spec.DebugLog
+		debugLog.Regexp = regexp.MustCompile(`[<>]`)
 	}
 	bid, err := ex.HoldAuction(context.Background(), &spec.IncomingRequest.OrtbRequest, mockIdFetcher(spec.IncomingRequest.Usersyncs), pbsmetrics.Labels{}, &categoriesFetcher, debugLog)
 	responseTimes := extractResponseTimes(t, filename, bid)
@@ -756,15 +779,20 @@ func runSpec(t *testing.T, filename string, spec *exchangeSpec) {
 		}
 	}
 	if spec.DebugLog != nil {
-		if spec.DebugLog.EnableDebug {
-			if len(debugLog.Data) <= len(spec.DebugLog.Data) {
-				t.Errorf("%s: DebugLog was not modified when it should have been", filename)
+		if spec.DebugLog.Enabled {
+			if len(debugLog.Data.Response) == 0 {
+				t.Errorf("%s: DebugLog response was not modified when it should have been", filename)
 			}
 		} else {
-			if !strings.EqualFold(spec.DebugLog.Data, debugLog.Data) {
-				t.Errorf("%s: DebugLog was modified when it shouldn't have been", filename)
+			if len(debugLog.Data.Response) != 0 {
+				t.Errorf("%s: DebugLog response was modified when it shouldn't have been", filename)
 			}
 		}
+	}
+	if spec.IncomingRequest.OrtbRequest.Test == 1 {
+		//compare debug info
+		diffJson(t, "Debug info modified", bid.Ext, spec.Response.Ext)
+
 	}
 }
 
@@ -805,7 +833,7 @@ func extractResponseTimes(t *testing.T, context string, bid *openrtb.BidResponse
 	}
 }
 
-func newExchangeForTests(t *testing.T, filename string, expectations map[string]*bidderSpec, aliases map[string]string, enforceCCPA bool) Exchange {
+func newExchangeForTests(t *testing.T, filename string, expectations map[string]*bidderSpec, aliases map[string]string, privacyConfig config.Privacy) Exchange {
 	adapters := make(map[openrtb_ext.BidderName]adaptedBidder)
 	for _, bidderName := range openrtb_ext.BidderMap {
 		if spec, ok := expectations[string(bidderName)]; ok {
@@ -843,7 +871,7 @@ func newExchangeForTests(t *testing.T, filename string, expectations map[string]
 		gDPR:                gdpr.AlwaysAllow{},
 		currencyConverter:   currencies.NewRateConverterDefault(),
 		UsersyncIfAmbiguous: false,
-		enforceCCPA:         enforceCCPA,
+		privacyConfig:       privacyConfig,
 	}
 }
 
@@ -1609,6 +1637,7 @@ type exchangeSpec struct {
 	OutgoingRequests map[string]*bidderSpec `json:"outgoingRequests"`
 	Response         exchangeResponse       `json:"response,omitempty"`
 	EnforceCCPA      bool                   `json:"enforceCcpa"`
+	EnforceLMT       bool                   `json:"enforceLmt"`
 	DebugLog         *DebugLog              `json:"debuglog,omitempty"`
 }
 
@@ -1620,6 +1649,7 @@ type exchangeRequest struct {
 type exchangeResponse struct {
 	Bids  *openrtb.BidResponse `json:"bids"`
 	Error string               `json:"error,omitempty"`
+	Ext   json.RawMessage      `json:"ext,omitempty"`
 }
 
 type bidderSpec struct {
@@ -1633,8 +1663,9 @@ type bidderRequest struct {
 }
 
 type bidderResponse struct {
-	SeatBid *bidderSeatBid `json:"pbsSeatBid,omitempty"`
-	Errors  []string       `json:"errors,omitempty"`
+	SeatBid   *bidderSeatBid             `json:"pbsSeatBid,omitempty"`
+	Errors    []string                   `json:"errors,omitempty"`
+	HttpCalls []*openrtb_ext.ExtHttpCall `json:"httpCalls,omitempty"`
 }
 
 // bidderSeatBid is basically a subset of pbsOrtbSeatBid from exchange/bidder.go.
@@ -1691,7 +1722,13 @@ func (b *validatingBidder) requestBid(ctx context.Context, request *openrtb.BidR
 			}
 
 			seatBid = &pbsOrtbSeatBid{
-				bids: bids,
+				bids:      bids,
+				httpCalls: mockResponse.HttpCalls,
+			}
+		} else {
+			seatBid = &pbsOrtbSeatBid{
+				bids:      nil,
+				httpCalls: mockResponse.HttpCalls,
 			}
 		}
 
@@ -1793,13 +1830,22 @@ func mockHandler(statusCode int, getBody string, postBody string) http.Handler {
 	})
 }
 
+func mockSlowHandler(delay time.Duration, statusCode int, body string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+
+		w.WriteHeader(statusCode)
+		w.Write([]byte(body))
+	})
+}
+
 type wellBehavedCache struct{}
 
 func (c *wellBehavedCache) GetExtCacheData() (string, string) {
 	return "www.pbcserver.com", "/pbcache/endpoint"
 }
 
-func (c *wellBehavedCache) PutJson(ctx context.Context, values []prebid_cache_client.Cacheable) ([]string, []error) {
+func (c *wellBehavedCache) PutJson(ctx context.Context, values []pbc.Cacheable) ([]string, []error) {
 	ids := make([]string, len(values))
 	for i := 0; i < len(values); i++ {
 		ids[i] = strconv.Itoa(i)
